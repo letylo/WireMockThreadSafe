@@ -44,8 +44,6 @@ public class StubForSyncTest {
     public void setUp() {
         
         url = "http://localhost:" + wireMock.port();
-        client = ClientBuilder.newClient();
-        target = client.target(url);
         queue = new ConcurrentLinkedDeque<>();
         
         wireMock.stubFor(get(urlMatching("/"))
@@ -82,6 +80,9 @@ public class StubForSyncTest {
      
     private long shouldThrowMuchRequests() throws InterruptedException {
 
+        client = ClientBuilder.newClient();
+        target = client.target(url);
+        
         int size = 1000;
         latch = new CountDownLatch(size);
         
@@ -96,7 +97,6 @@ public class StubForSyncTest {
                             .request(MediaType.TEXT_PLAIN)
                             .get(String.class);
                     
-//                    System.out.println(response);
                     queue.add(response);
                     
                 } catch (Exception e) {
@@ -109,7 +109,7 @@ public class StubForSyncTest {
         
         long end = System.nanoTime();
         long difference = end - start;
-        latch.await(10, TimeUnit.SECONDS);
+        latch.await(5, TimeUnit.SECONDS);
 
        
         then(queue).containsOnlyOnce("1");
@@ -123,11 +123,18 @@ public class StubForSyncTest {
         long difference;
         long timeToDoARequest;
         
-        for (int i = 0; i < 200; i++) {
+        for (int i = 0; i < 10; i++) {
             
             difference = shouldThrowMuchRequests();
+            Thread.sleep(1000L);
+        }  
+        
+        for (int i = 0; i < 100; i++) {
+            
+            difference = shouldThrowMuchRequests();
+            Thread.sleep(1000L);
             timeToDoARequest = TimeUnit.NANOSECONDS.toMicros(difference);
             System.out.println(timeToDoARequest);
-        }       
+        } 
     }
 }

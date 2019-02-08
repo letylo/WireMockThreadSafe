@@ -1,10 +1,11 @@
 package com.github.letylo;
 
+import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlMatching;
 import static org.assertj.core.api.BDDAssertions.then;
 
-import com.github.tomakehurst.wiremock.client.WireMock;
+import com.github.tomakehurst.wiremock.client.ScenarioMappingBuilder;
 import com.github.tomakehurst.wiremock.junit.WireMockRule;
 import com.github.tomakehurst.wiremock.stubbing.Scenario;
 
@@ -12,13 +13,21 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
+import org.junit.runners.Parameterized.Parameter;
+import org.junit.runners.Parameterized.Parameters;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import javax.ws.rs.client.Client;
 import javax.ws.rs.client.ClientBuilder;
@@ -29,112 +38,131 @@ import javax.ws.rs.core.MediaType;
  *
  * @author leticia
  */
+@RunWith(Parameterized.class)
 public class StubForSyncTest {
 
-    @Rule public WireMockRule wireMock = new WireMockRule(0);
-    
+    @Rule
+    public WireMockRule wireMock = new WireMockRule(0);
+
     private ExecutorService executor;
     private Client client;
-    private WebTarget target;
-    private String url;
-    private Queue<String> queue;
-    private CountDownLatch latch;
-    
+
+    @Parameter(0)
+    public int size;
+
     @Before
     public void setUp() {
         
-        url = "http://localhost:" + wireMock.port();
-        queue = new ConcurrentLinkedDeque<>();
-        
-        wireMock.stubFor(get(urlMatching("/"))
-                .inScenario("Scenario")
-                .whenScenarioStateIs(Scenario.STARTED)
-                .willSetStateTo("FirstState")
-                .willReturn(
-                        WireMock.aResponse()
-                                .withBody("1")
-                                .withStatus(200)
-                                .withHeader("Content-Type", MediaType.TEXT_PLAIN)
-        ));
+        List<String> states = IntStream.rangeClosed(2, size)
+                .mapToObj(String::valueOf).collect(Collectors.toList());
+        String current = Scenario.STARTED;
 
-        wireMock.stubFor(get(urlMatching("/"))
-                .inScenario("Scenario")
-                .whenScenarioStateIs("FirstState")
-                .willReturn(
-                        WireMock.aResponse()
-                                .withBody("2")
-                                .withStatus(200)
-                                .withHeader("Content-Type", MediaType.TEXT_PLAIN)
-        ));
-       
-        wireMock.start();
+        for (String nextState : states) {
 
-        executor = Executors.newCachedThreadPool();   
+            wireMock.stubFor(stubState(current).willSetStateTo(nextState));
+            current = nextState;
+        }
+
+        wireMock.stubFor(stubState(current));
+        client = ClientBuilder.newClient();
+        executor = Executors.newCachedThreadPool();
     }
-    
+
+    private ScenarioMappingBuilder stubState(String current) {
+
+        return get(urlMatching("/")).inScenario("Scenario")
+                .whenScenarioStateIs(current)
+                .willReturn(aResponse().withBody(current).withStatus(200)
+                        .withHeader("Content-Type", MediaType.TEXT_PLAIN));
+    }
+
     @After
     public void tearDown() {
-        
-        executor.shutdown();
-    }
-     
-    private long shouldThrowMuchRequests() throws InterruptedException {
 
-        client = ClientBuilder.newClient();
-        target = client.target(url);
+        executor.shutdown();
+        client.close();
+    }
+
+    private long shouldThrowMuchRequests(int size) throws InterruptedException {
         
-        int size = 1000;
-        latch = new CountDownLatch(size);
-        
+        String url = "http://localhost:" + wireMock.port();
+        WebTarget target = client.target(url);
+        CountDownLatch latch = new CountDownLatch(size);
+        Queue<String> queue = new ConcurrentLinkedDeque<>();
+
         long start = System.nanoTime();
-        
+
         for (int i = 0; i < size; i++) {
-            
+
             executor.submit(() -> {
-                
+
                 try {
-                    String response = target
-                            .request(MediaType.TEXT_PLAIN)
+                    String response = target.request(MediaType.TEXT_PLAIN)
                             .get(String.class);
-                    
                     queue.add(response);
-                    
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    // e.printStackTrace();
                 } finally {
                     latch.countDown();
                 }
             });
         }
-        
+
         long end = System.nanoTime();
         long difference = end - start;
         latch.await(5, TimeUnit.SECONDS);
 
-       
-        then(queue).containsOnlyOnce("1");
-        
+        then(queue).doesNotHaveDuplicates().hasSize(size);
+
         return difference;
     }
-    
+
+    @Parameters(name = "count= {0}")
+    public static List<Integer> data() {
+        
+        List<Integer> values = new ArrayList<>();
+        
+        for (int i = 10; i < 1000; i *= 10) {
+            
+            for (int j = 1; j < 10; j++) {
+               
+                values.add(i*j);
+            }
+        }
+
+        values.add(1000);
+        
+        return values;
+    }
+
     @Test
-    public void runTwoHundredTimes() throws InterruptedException {
+    public void runTimes() throws InterruptedException {
+
+//        System.out.println("Size: " + size);
+        List<Long> times = new ArrayList<>();
         
-        long difference;
-        long timeToDoARequest;
-        
+        // to warm up
+        for (int i = 0; i < 5; i++) {
+            
+            shouldThrowMuchRequests(size);
+            wireMock.resetRequests();
+            wireMock.resetScenarios();
+        }
+
         for (int i = 0; i < 10; i++) {
-            
-            difference = shouldThrowMuchRequests();
+
+            long difference = shouldThrowMuchRequests(size);
+            long timeToDoARequest = TimeUnit.NANOSECONDS.toMicros(difference);
+//            System.out.println(timeToDoARequest);
+            times.add(difference);
+            wireMock.resetRequests();
+            wireMock.resetScenarios();
             Thread.sleep(1000L);
-        }  
+        }
+
+        long average = TimeUnit.NANOSECONDS.toMicros((long) times.stream()
+                .mapToLong(Long::longValue).average().getAsDouble());
         
-        for (int i = 0; i < 100; i++) {
-            
-            difference = shouldThrowMuchRequests();
-            Thread.sleep(1000L);
-            timeToDoARequest = TimeUnit.NANOSECONDS.toMicros(difference);
-            System.out.println(timeToDoARequest);
-        } 
+        System.out.println(size + " - " + average);
     }
 }

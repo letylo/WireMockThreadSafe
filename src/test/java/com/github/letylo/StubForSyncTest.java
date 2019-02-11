@@ -107,11 +107,11 @@ public class StubForSyncTest {
                 }
             });
         }
-
+        
+        latch.await(5, TimeUnit.SECONDS);
         long end = System.nanoTime();
         long difference = end - start;
-        latch.await(5, TimeUnit.SECONDS);
-
+        
         then(queue).doesNotHaveDuplicates().hasSize(size);
 
         return difference;
